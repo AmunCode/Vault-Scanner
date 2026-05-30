@@ -555,19 +555,39 @@
             return;
         }
 
+        // Only request formats this browser actually supports.
+        // UPC-A is a subset of EAN-13, so ean_13 catches UPC-A barcodes too.
+        let supported = [];
+        try { supported = await BarcodeDetector.getSupportedFormats(); } catch (_) {}
+        const wanted  = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'];
+        const formats = wanted.filter(f => supported.includes(f));
+        if (formats.length === 0) formats.push('ean_13');
+
+        let detector;
+        try {
+            detector = new BarcodeDetector({ formats });
+        } catch (_) {
+            // Constructor failed (e.g. no supported formats) — fall back
+            await startHtml5QrScan();
+            return;
+        }
+
         const videoEl = document.getElementById('video-scan');
         videoEl.srcObject = scanStream;
         scanActive = true;
 
-        const detector = new BarcodeDetector({
-            formats: ['upc_a', 'upc_e', 'ean_8', 'ean_13', 'code_128']
-        });
+        // Detect from a canvas snapshot — more reliable than raw video element
+        const canvas = document.createElement('canvas');
+        const ctx    = canvas.getContext('2d');
 
         const loop = async () => {
             if (!scanActive) return;
             if (videoEl.readyState >= 2 && videoEl.videoWidth > 0) {
+                canvas.width  = videoEl.videoWidth;
+                canvas.height = videoEl.videoHeight;
+                ctx.drawImage(videoEl, 0, 0);
                 try {
-                    const hits = await detector.detect(videoEl);
+                    const hits = await detector.detect(canvas);
                     if (hits.length > 0 && scanActive) {
                         scanActive = false;
                         onBarcodeFound(hits[0].rawValue);
@@ -575,7 +595,7 @@
                     }
                 } catch (_) {}
             }
-            if (scanActive) setTimeout(loop, 250);
+            if (scanActive) setTimeout(loop, 150);
         };
 
         if (videoEl.readyState >= 2) { loop(); }
@@ -603,7 +623,7 @@
         try {
             await html5QrCode.start(
                 { facingMode: 'environment' },
-                { fps: 10, formatsToSupport: formats },   // no aspectRatio — breaks iOS
+                { fps: 10, formatsToSupport: formats, qrbox: { width: 280, height: 120 } },
                 onBarcodeFound,
                 () => {}   // per-frame miss — suppress
             );
