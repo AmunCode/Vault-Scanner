@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Vault Scanner</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #0f172a;
+            --surface: #1e293b;
+            --border: #334155;
+            --text: #f1f5f9;
+            --muted: #94a3b8;
+            --accent: #3b82f6;
+            --accent-dark: #2563eb;
+            --success: #22c55e;
+            --danger: #ef4444;
+            --radius: 14px;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 1.25rem;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .screen {
+            width: 100%;
+            max-width: 420px;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 1rem;
+            animation: fadeUp 0.2s ease both;
+        }
+
+        .screen.active { display: flex; }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(10px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.5px; }
+        h2 { font-size: 1.4rem; font-weight: 600; }
+
+        .logo {
+            width: 76px;
+            height: 76px;
+            background: var(--accent);
+            border-radius: 22px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 0.25rem;
+            box-shadow: 0 8px 24px rgba(59,130,246,.35);
+        }
+
+        .logo svg { width: 44px; height: 44px; fill: white; }
+
+        .subtitle {
+            color: var(--muted);
+            font-size: 0.9rem;
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        /* Buttons */
+        .btn {
+            width: 100%;
+            padding: 1rem;
+            border: none;
+            border-radius: var(--radius);
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s, transform 0.1s;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .btn:active { transform: scale(0.97); opacity: 0.85; }
+
+        .btn-primary  { background: var(--accent); color: #fff; }
+        .btn-primary:hover { background: var(--accent-dark); }
+        .btn-success  { background: var(--success); color: #fff; }
+        .btn-ghost    { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+        .btn-link     { background: transparent; color: var(--muted); font-weight: 500; font-size: 0.9rem; }
+
+        .stack { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; }
+
+        /* Camera wrapper */
+        .camera-wrap {
+            width: 100%;
+            background: #000;
+            border-radius: var(--radius);
+            overflow: hidden;
+            position: relative;
+            aspect-ratio: 4/3;
+        }
+
+        #video-scan, #video-capture {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        /* Scan corners + animated line (native path) */
+        .scan-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
+        .scan-frame {
+            width: 68%;
+            height: 36%;
+            position: relative;
+        }
+        .scan-frame::before, .scan-frame::after,
+        .scan-frame > span::before, .scan-frame > span::after {
+            content: '';
+            position: absolute;
+            width: 22px;
+            height: 22px;
+            border-color: var(--accent);
+            border-style: solid;
+        }
+        .scan-frame::before        { top: 0;    left: 0;  border-width: 3px 0 0 3px; }
+        .scan-frame::after         { top: 0;    right: 0; border-width: 3px 3px 0 0; }
+        .scan-frame > span::before { bottom: 0; left: 0;  border-width: 0 0 3px 3px; }
+        .scan-frame > span::after  { bottom: 0; right: 0; border-width: 0 3px 3px 0; }
+        .scan-line {
+            position: absolute;
+            left: 4px; right: 4px;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
+            box-shadow: 0 0 8px var(--accent);
+            animation: scanline 2s ease-in-out infinite;
+        }
+        @keyframes scanline {
+            0%, 100% { top: 8%;  }
+            50%       { top: 86%; }
+        }
+
+        /* Manual entry fallback */
+        .info-box {
+            width: 100%;
+            background: rgba(59,130,246,.1);
+            border: 1px solid rgba(59,130,246,.3);
+            border-radius: 10px;
+            padding: 0.75rem 1rem;
+            font-size: 0.82rem;
+            color: #93c5fd;
+            line-height: 1.5;
+        }
+        .manual-wrap {
+            width: 100%;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .manual-wrap label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; }
+        .manual-wrap input {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 1.5rem;
+            font-family: 'Courier New', monospace;
+            letter-spacing: 0.15em;
+            padding: 0.65rem 0.85rem;
+            width: 100%;
+            text-align: center;
+        }
+        .manual-wrap input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+        .manual-wrap input::placeholder { color: var(--border); letter-spacing: 0; font-size: 1rem; }
+
+        /* Scan overlay corners */
+        .scan-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+        }
+
+        .scan-frame {
+            width: 68%;
+            height: 38%;
+            position: relative;
+        }
+
+        .scan-frame::before, .scan-frame::after,
+        .scan-frame > span::before, .scan-frame > span::after {
+            content: '';
+            position: absolute;
+            width: 22px;
+            height: 22px;
+            border-color: var(--accent);
+            border-style: solid;
+            border-radius: 2px;
+        }
+        .scan-frame::before    { top: 0; left: 0;  border-width: 3px 0 0 3px; }
+        .scan-frame::after     { top: 0; right: 0; border-width: 3px 3px 0 0; }
+        .scan-frame > span::before { bottom: 0; left: 0;  border-width: 0 0 3px 3px; }
+        .scan-frame > span::after  { bottom: 0; right: 0; border-width: 0 3px 3px 0; }
+
+        .scan-line {
+            position: absolute;
+            left: 4px; right: 4px;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--accent), transparent);
+            box-shadow: 0 0 8px var(--accent);
+            animation: scanline 2s ease-in-out infinite;
+        }
+
+        @keyframes scanline {
+            0%, 100% { top: 8%; }
+            50%       { top: 84%; }
+        }
+
+        /* html5-qrcode reader container */
+        #reader {
+            width: 100%;
+            border-radius: var(--radius);
+            overflow: hidden;
+            background: #000;
+        }
+
+        /* Hide the default html5-qrcode UI chrome */
+        #reader__dashboard,
+        #reader__dashboard_section_swaplink,
+        #reader__status_span,
+        #reader__camera_selection { display: none !important; }
+
+        #reader__scan_region { border-radius: var(--radius); }
+
+        #reader video { border-radius: var(--radius); display: block; }
+
+        /* Barcode badge */
+        .barcode-badge {
+            width: 100%;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 0.85rem 1.1rem;
+        }
+
+        .barcode-badge .label {
+            color: var(--muted);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            margin-bottom: 0.2rem;
+        }
+
+        .barcode-badge .code {
+            font-family: 'Courier New', monospace;
+            font-size: 1.6rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            color: var(--accent);
+        }
+
+        /* Preview image */
+        #preview-img {
+            width: 100%;
+            border-radius: var(--radius);
+            display: block;
+            object-fit: cover;
+        }
+
+        /* Uploading indicator */
+        .uploading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.6rem;
+            color: var(--muted);
+            font-size: 0.9rem;
+            padding: 0.5rem;
+        }
+
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.65s linear infinite;
+            flex-shrink: 0;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Success screen */
+        .success-circle {
+            width: 84px;
+            height: 84px;
+            border-radius: 50%;
+            background: var(--success);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.2rem;
+            box-shadow: 0 8px 24px rgba(34,197,94,.35);
+            animation: popIn 0.35s cubic-bezier(.175,.885,.32,1.275) both;
+        }
+
+        @keyframes popIn {
+            from { transform: scale(0); opacity: 0; }
+            to   { transform: scale(1); opacity: 1; }
+        }
+
+        .filename-chip {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.45rem 0.9rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.95rem;
+            color: var(--muted);
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 1.5rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #1e293b;
+            border: 1px solid var(--danger);
+            color: #fca5a5;
+            padding: 0.75rem 1.25rem;
+            border-radius: 10px;
+            font-size: 0.85rem;
+            max-width: calc(100vw - 2rem);
+            text-align: center;
+            line-height: 1.45;
+            display: none;
+            z-index: 999;
+            box-shadow: 0 4px 20px rgba(0,0,0,.4);
+        }
+
+        .toast.show {
+            display: block;
+            animation: fadeUp 0.2s ease both;
+        }
+
+        .spacer { height: 0.5rem; }
+    </style>
+</head>
+<body>
+
+<!-- HOME -->
+<div id="screen-home" class="screen active">
+    <div class="logo">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <rect x="1"  y="2" width="2" height="20"/>
+            <rect x="4"  y="2" width="1" height="20"/>
+            <rect x="6"  y="2" width="2" height="20"/>
+            <rect x="10" y="2" width="1" height="20"/>
+            <rect x="12" y="2" width="3" height="20"/>
+            <rect x="16" y="2" width="1" height="20"/>
+            <rect x="18" y="2" width="2" height="20"/>
+            <rect x="21" y="2" width="2" height="20"/>
+        </svg>
+    </div>
+    <h1>Vault Scanner</h1>
+    <p class="subtitle">Scan a UPC barcode, then photograph the item to store it.</p>
+    <div class="spacer"></div>
+    <button class="btn btn-primary" id="btn-start">Scan Barcode</button>
+</div>
+
+<!-- SCAN -->
+<div id="screen-scan" class="screen">
+    <h2>Scan Barcode</h2>
+
+    <!-- Path A: native BarcodeDetector (iOS 17+ / Chrome 83+) -->
+    <div id="area-native" style="display:none; width:100%">
+        <div class="camera-wrap">
+            <video id="video-scan" autoplay playsinline muted></video>
+            <div class="scan-overlay">
+                <div class="scan-frame"><span></span><div class="scan-line"></div></div>
+            </div>
+        </div>
+        <p class="subtitle" style="margin-top:.25rem">Hold the barcode steady in the frame</p>
+    </div>
+
+    <!-- Path B: html5-qrcode (older browsers) -->
+    <div id="area-qr" style="display:none; width:100%">
+        <div id="reader"></div>
+        <p class="subtitle" style="margin-top:.25rem">Hold the barcode steady in the frame</p>
+    </div>
+
+    <!-- Path C: manual entry fallback -->
+    <div id="area-manual" style="display:none; width:100%">
+        <div class="info-box">Camera unavailable on this browser or device.<br>Enter the first 6 digits of the barcode manually.</div>
+        <div class="manual-wrap">
+            <label>First 6 barcode digits</label>
+            <input id="manual-input" type="tel" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off">
+            <button class="btn btn-primary" id="btn-manual-submit">Continue &rarr;</button>
+        </div>
+    </div>
+
+    <div class="stack">
+        <button class="btn btn-link"  id="btn-enter-manual">Enter barcode manually instead</button>
+        <button class="btn btn-ghost" id="btn-cancel-scan">Cancel</button>
+    </div>
+</div>
+
+<!-- CAPTURE -->
+<div id="screen-capture" class="screen">
+    <h2>Capture Item</h2>
+    <div class="barcode-badge">
+        <div class="label">Barcode prefix</div>
+        <div class="code" id="barcode-display">------</div>
+    </div>
+    <div class="camera-wrap">
+        <video id="video-capture" autoplay playsinline muted></video>
+    </div>
+    <div class="stack">
+        <button class="btn btn-primary" id="btn-capture">Take Photo</button>
+        <button class="btn btn-ghost"   id="btn-rescan">Rescan Barcode</button>
+    </div>
+</div>
+
+<!-- PREVIEW -->
+<div id="screen-preview" class="screen">
+    <h2>Review Photo</h2>
+    <div class="barcode-badge">
+        <div class="label">Barcode prefix</div>
+        <div class="code" id="barcode-preview">------</div>
+    </div>
+    <img id="preview-img" alt="Captured item">
+    <div id="uploading-indicator" class="uploading" style="display:none">
+        <div class="spinner"></div>
+        <span>Uploading to Azure&hellip;</span>
+    </div>
+    <div class="stack" id="preview-actions">
+        <button class="btn btn-success" id="btn-upload">Upload</button>
+        <button class="btn btn-ghost"   id="btn-retake">Retake Photo</button>
+        <button class="btn btn-link"    id="btn-rescan-from-preview">Scan Different Barcode</button>
+    </div>
+</div>
+
+<!-- SUCCESS -->
+<div id="screen-success" class="screen">
+    <div class="success-circle">✓</div>
+    <h2>Uploaded!</h2>
+    <p class="subtitle">Image saved to storage as</p>
+    <div class="filename-chip" id="success-filename"></div>
+    <div class="spacer"></div>
+    <button class="btn btn-primary" id="btn-scan-again">Scan Another Item</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+    // ── Feature detection ──────────────────────────────────────────────────────
+    const USE_NATIVE   = typeof BarcodeDetector !== 'undefined';
+    const HAS_CAMERA   = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    const IS_SECURE    = window.isSecureContext;
+
+    // ── State ──────────────────────────────────────────────────────────────────
+    let currentBarcode = '';
+    let photoBlob      = null;
+    let scanStream     = null;   // stream kept alive through native scan → capture
+    let captureStream  = null;   // separate stream for html5-qrcode path capture
+    let scanActive     = false;
+    let html5QrCode    = null;
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+    function showScreen(id) {
+        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+        document.getElementById(`screen-${id}`).classList.add('active');
+    }
+
+    function showToast(msg, ms = 6000) {
+        const t = document.getElementById('toast');
+        t.textContent = msg;
+        t.classList.add('show');
+        clearTimeout(t._t);
+        t._t = setTimeout(() => t.classList.remove('show'), ms);
+    }
+
+    function setScanArea(which) {
+        ['native', 'qr', 'manual'].forEach(a =>
+            document.getElementById(`area-${a}`).style.display = a === which ? 'block' : 'none'
+        );
+    }
+
+    function cameraErrorMsg(err) {
+        if (!IS_SECURE)
+            return 'Camera requires HTTPS. Open the app via the Railway URL, not a local IP.';
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')
+            return 'Camera access denied.\nOn iPhone: Settings → Safari → Camera → Allow.\nThen reload the page.';
+        if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError')
+            return 'No camera found on this device.';
+        if (err.name === 'NotReadableError')
+            return 'Camera is in use by another app. Close it and try again.';
+        return `Camera error: ${err.message || err.name}`;
+    }
+
+    // ── Scanning entry point ───────────────────────────────────────────────────
+    async function startScanning() {
+        currentBarcode = '';
+        scanActive     = false;
+        setScanArea('native');   // hide all until we know which path
+        showScreen('scan');
+
+        if (!IS_SECURE || !HAS_CAMERA) {
+            showManualEntry();
+            if (!IS_SECURE) showToast('Camera requires HTTPS — using manual entry instead.');
+            return;
+        }
+
+        // Small delay so the screen is visible before camera initialises
+        await new Promise(r => setTimeout(r, 80));
+
+        if (USE_NATIVE) {
+            await startNativeScan();
+        } else {
+            await startHtml5QrScan();
+        }
+    }
+
+    // ── Path A: BarcodeDetector (iOS 17+, Chrome 83+) ─────────────────────────
+    async function startNativeScan() {
+        setScanArea('native');
+        try {
+            scanStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment' }
+            });
+        } catch (err) {
+            showToast(cameraErrorMsg(err));
+            showManualEntry();
+            return;
+        }
+
+        const videoEl = document.getElementById('video-scan');
+        videoEl.srcObject = scanStream;
+        scanActive = true;
+
+        const detector = new BarcodeDetector({
+            formats: ['upc_a', 'upc_e', 'ean_8', 'ean_13', 'code_128']
+        });
+
+        const loop = async () => {
+            if (!scanActive) return;
+            if (videoEl.readyState >= 2 && videoEl.videoWidth > 0) {
+                try {
+                    const hits = await detector.detect(videoEl);
+                    if (hits.length > 0 && scanActive) {
+                        scanActive = false;
+                        onBarcodeFound(hits[0].rawValue);
+                        return;
+                    }
+                } catch (_) {}
+            }
+            if (scanActive) setTimeout(loop, 250);
+        };
+
+        if (videoEl.readyState >= 2) { loop(); }
+        else { videoEl.addEventListener('loadedmetadata', loop, { once: true }); }
+    }
+
+    // ── Path B: html5-qrcode (older browsers / iOS < 17) ─────────────────────
+    async function startHtml5QrScan() {
+        setScanArea('qr');
+
+        if (html5QrCode) {
+            try { await html5QrCode.stop(); } catch (_) {}
+            html5QrCode = null;
+        }
+        document.getElementById('reader').innerHTML = '';
+        html5QrCode = new Html5Qrcode('reader');
+
+        const formats = [
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+        ];
+
+        try {
+            await html5QrCode.start(
+                { facingMode: 'environment' },
+                { fps: 10, formatsToSupport: formats },   // no aspectRatio — breaks iOS
+                onBarcodeFound,
+                () => {}   // per-frame miss — suppress
+            );
+        } catch (err) {
+            showToast(cameraErrorMsg(err));
+            showManualEntry();
+        }
+    }
+
+    // ── Path C: manual entry ───────────────────────────────────────────────────
+    function showManualEntry() {
+        scanActive = false;
+        setScanArea('manual');
+        const inp = document.getElementById('manual-input');
+        inp.value = '';
+        setTimeout(() => inp.focus(), 150);
+    }
+
+    // ── Barcode found (all paths) ─────────────────────────────────────────────
+    async function onBarcodeFound(text) {
+        if (currentBarcode) return;   // prevent double-fire
+        currentBarcode = text.slice(0, 6);
+        scanActive     = false;
+
+        // Stop html5-qrcode if it was running
+        if (html5QrCode) {
+            try { await html5QrCode.stop(); } catch (_) {}
+        }
+
+        document.getElementById('barcode-display').textContent = currentBarcode;
+
+        if (USE_NATIVE && scanStream) {
+            // Reuse the already-open stream — no restart needed
+            document.getElementById('video-capture').srcObject = scanStream;
+            showScreen('capture');
+        } else {
+            await startCaptureCamera();
+        }
+    }
+
+    // ── Capture camera (html5-qrcode path or retake) ──────────────────────────
+    async function startCaptureCamera() {
+        try {
+            captureStream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: 'environment' }
+            });
+            document.getElementById('video-capture').srcObject = captureStream;
+            showScreen('capture');
+        } catch (err) {
+            showToast(cameraErrorMsg(err));
+            showScreen('home');
+        }
+    }
+
+    function stopAllStreams() {
+        scanActive = false;
+        [scanStream, captureStream].forEach(s => {
+            if (s) s.getTracks().forEach(t => t.stop());
+        });
+        scanStream    = null;
+        captureStream = null;
+        document.getElementById('video-scan').srcObject    = null;
+        document.getElementById('video-capture').srcObject = null;
+    }
+
+    // ── Photo capture ──────────────────────────────────────────────────────────
+    function capturePhoto() {
+        const video = document.getElementById('video-capture');
+        if (!video.videoWidth) {
+            showToast('Camera not ready — wait a moment and try again.');
+            return;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width  = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext('2d').drawImage(video, 0, 0);
+
+        canvas.toBlob(blob => {
+            photoBlob = blob;
+            stopAllStreams();
+            document.getElementById('barcode-preview').textContent = currentBarcode;
+            document.getElementById('preview-img').src = URL.createObjectURL(blob);
+            showScreen('preview');
+        }, 'image/jpeg', 0.92);
+    }
+
+    // ── Upload ─────────────────────────────────────────────────────────────────
+    async function uploadPhoto() {
+        if (!photoBlob || !currentBarcode) return;
+        document.getElementById('preview-actions').style.display     = 'none';
+        document.getElementById('uploading-indicator').style.display = 'flex';
+
+        const form = new FormData();
+        form.append('barcode', currentBarcode);
+        form.append('image', photoBlob, `${currentBarcode}.jpg`);
+
+        try {
+            const res  = await fetch('/upload', { method: 'POST', body: form });
+            const data = await res.json();
+            if (data.success) {
+                document.getElementById('success-filename').textContent = data.filename;
+                showScreen('success');
+            } else {
+                showToast(data.error || 'Upload failed — please try again.');
+                resetPreviewActions();
+            }
+        } catch (_) {
+            showToast('Network error — check your connection and try again.');
+            resetPreviewActions();
+        }
+    }
+
+    function resetPreviewActions() {
+        document.getElementById('preview-actions').style.display     = 'flex';
+        document.getElementById('uploading-indicator').style.display = 'none';
+    }
+
+    // ── Full reset ─────────────────────────────────────────────────────────────
+    function reset() {
+        currentBarcode = '';
+        photoBlob      = null;
+        stopAllStreams();
+        if (html5QrCode) {
+            try { html5QrCode.stop(); } catch (_) {}
+            html5QrCode = null;
+        }
+        document.getElementById('reader').innerHTML = '';
+        resetPreviewActions();
+        showScreen('home');
+    }
+
+    // ── Event listeners ────────────────────────────────────────────────────────
+    document.getElementById('btn-start').addEventListener('click', startScanning);
+
+    document.getElementById('btn-cancel-scan').addEventListener('click', async () => {
+        scanActive = false;
+        if (html5QrCode) { try { await html5QrCode.stop(); } catch (_) {} html5QrCode = null; }
+        stopAllStreams();
+        document.getElementById('reader').innerHTML = '';
+        showScreen('home');
+    });
+
+    document.getElementById('btn-enter-manual').addEventListener('click', () => {
+        scanActive = false;
+        if (html5QrCode) { try { html5QrCode.stop(); } catch (_) {} html5QrCode = null; }
+        stopAllStreams();
+        showManualEntry();
+    });
+
+    document.getElementById('btn-manual-submit').addEventListener('click', async () => {
+        const val = document.getElementById('manual-input').value.trim();
+        if (!val) { showToast('Please enter the barcode digits.'); return; }
+        currentBarcode = val.slice(0, 6);
+        document.getElementById('barcode-display').textContent = currentBarcode;
+        await startCaptureCamera();
+    });
+
+    document.getElementById('manual-input').addEventListener('keydown', e => {
+        if (e.key === 'Enter') document.getElementById('btn-manual-submit').click();
+    });
+
+    document.getElementById('btn-rescan').addEventListener('click', () => {
+        stopAllStreams();
+        currentBarcode = '';
+        startScanning();
+    });
+
+    document.getElementById('btn-capture').addEventListener('click', capturePhoto);
+    document.getElementById('btn-upload').addEventListener('click', uploadPhoto);
+
+    document.getElementById('btn-retake').addEventListener('click', async () => {
+        photoBlob = null;
+        document.getElementById('barcode-display').textContent = currentBarcode;
+        await startCaptureCamera();
+    });
+
+    document.getElementById('btn-rescan-from-preview').addEventListener('click', () => {
+        photoBlob = null;
+        startScanning();
+    });
+
+    document.getElementById('btn-scan-again').addEventListener('click', reset);
+</script>
+</body>
+</html>
