@@ -235,20 +235,23 @@
             50%       { top: 84%; }
         }
 
-        /* Quagga2 reader container */
+        /* html5-qrcode reader container */
         #reader {
             width: 100%;
             border-radius: var(--radius);
             overflow: hidden;
             background: #000;
-            position: relative;
         }
-        #reader video { width: 100%; height: auto; display: block; border-radius: var(--radius); }
-        #reader canvas.drawingBuffer {
-            position: absolute; top: 0; left: 0;
-            width: 100% !important; height: 100% !important;
-            opacity: 0;
-        }
+
+        /* Hide the default html5-qrcode UI chrome */
+        #reader__dashboard,
+        #reader__dashboard_section_swaplink,
+        #reader__status_span,
+        #reader__camera_selection { display: none !important; }
+
+        #reader__scan_region { border-radius: var(--radius); }
+
+        #reader video { border-radius: var(--radius); display: block; }
 
         /* Barcode badge */
         .barcode-badge {
@@ -469,21 +472,20 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.4/dist/quagga.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script>
     // ── Feature detection ──────────────────────────────────────────────────────
-    const USE_NATIVE = typeof BarcodeDetector !== 'undefined';
-    const HAS_CAMERA = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-    const IS_SECURE  = window.isSecureContext;
+    const USE_NATIVE   = typeof BarcodeDetector !== 'undefined';
+    const HAS_CAMERA   = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    const IS_SECURE    = window.isSecureContext;
 
     // ── State ──────────────────────────────────────────────────────────────────
-    let currentBarcode  = '';
-    let photoBlob       = null;
-    let scanStream      = null;
-    let captureStream   = null;
-    let scanActive      = false;
-    let quaggaRunning   = false;
-    let quaggaHandler   = null;
+    let currentBarcode = '';
+    let photoBlob      = null;
+    let scanStream     = null;   // stream kept alive through native scan → capture
+    let captureStream  = null;   // separate stream for html5-qrcode path capture
+    let scanActive     = false;
+    let html5QrCode    = null;
 
     // ── Helpers ────────────────────────────────────────────────────────────────
     function showScreen(id) {
@@ -507,29 +509,21 @@
 
     function cameraErrorMsg(err) {
         if (!IS_SECURE)
-            return 'Camera requires HTTPS. Open the app via the Railway URL.';
-        if (err && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError'))
+            return 'Camera requires HTTPS. Open the app via the Railway URL, not a local IP.';
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')
             return 'Camera access denied.\nOn iPhone: Settings → Safari → Camera → Allow.\nThen reload the page.';
-        if (err && (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError'))
+        if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError')
             return 'No camera found on this device.';
-        if (err && err.name === 'NotReadableError')
+        if (err.name === 'NotReadableError')
             return 'Camera is in use by another app. Close it and try again.';
-        return 'Could not start camera. Try the manual entry option below.';
-    }
-
-    // Strip EAN-13 wrapper from UPC-A: a 13-digit code starting with 0 is
-    // UPC-A padded to EAN-13 — remove the leading 0 to recover the real digits.
-    function normalizeBarcode(raw) {
-        raw = (raw || '').trim();
-        if (raw.length === 13 && raw[0] === '0') raw = raw.slice(1);
-        return raw.slice(0, 6);
+        return `Camera error: ${err.message || err.name}`;
     }
 
     // ── Scanning entry point ───────────────────────────────────────────────────
     async function startScanning() {
         currentBarcode = '';
         scanActive     = false;
-        setScanArea('native');
+        setScanArea('native');   // hide all until we know which path
         showScreen('scan');
 
         if (!IS_SECURE || !HAS_CAMERA) {
@@ -538,12 +532,13 @@
             return;
         }
 
+        // Small delay so the screen is visible before camera initialises
         await new Promise(r => setTimeout(r, 80));
 
         if (USE_NATIVE) {
             await startNativeScan();
         } else {
-            await startQuaggaScan();
+            await startHtml5QrScan();
         }
     }
 
@@ -560,8 +555,8 @@
             return;
         }
 
-        // Only use formats the browser actually supports.
-        // ean_13 covers UPC-A (UPC-A is a 12-digit subset of EAN-13).
+        // Only request formats this browser actually supports.
+        // UPC-A is a subset of EAN-13, so ean_13 catches UPC-A barcodes too.
         let supported = [];
         try { supported = await BarcodeDetector.getSupportedFormats(); } catch (_) {}
         const wanted  = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128'];
@@ -572,7 +567,8 @@
         try {
             detector = new BarcodeDetector({ formats });
         } catch (_) {
-            await startQuaggaScan();
+            // Constructor failed (e.g. no supported formats) — fall back
+            await startHtml5QrScan();
             return;
         }
 
@@ -580,6 +576,7 @@
         videoEl.srcObject = scanStream;
         scanActive = true;
 
+        // Detect from a canvas snapshot — more reliable than raw video element
         const canvas = document.createElement('canvas');
         const ctx    = canvas.getContext('2d');
 
@@ -601,68 +598,38 @@
             if (scanActive) setTimeout(loop, 150);
         };
 
-        if (videoEl.readyState >= 2) loop();
-        else videoEl.addEventListener('loadedmetadata', loop, { once: true });
+        if (videoEl.readyState >= 2) { loop(); }
+        else { videoEl.addEventListener('loadedmetadata', loop, { once: true }); }
     }
 
-    // ── Path B: Quagga2 — purpose-built for 1D barcodes (UPC/EAN) ────────────
-    async function startQuaggaScan() {
+    // ── Path B: html5-qrcode (older browsers / iOS < 17) ─────────────────────
+    async function startHtml5QrScan() {
         setScanArea('qr');
-        await stopQuagga();
+
+        if (html5QrCode) {
+            try { await html5QrCode.stop(); } catch (_) {}
+            html5QrCode = null;
+        }
         document.getElementById('reader').innerHTML = '';
+        html5QrCode = new Html5Qrcode('reader');
 
-        quaggaHandler = function (result) {
-            if (!scanActive) return;
-            const code   = result.codeResult.code;
-            const errors = (result.codeResult.decodedCodes || [])
-                .filter(x => x.error !== undefined).map(x => x.error);
-            const avg = errors.length
-                ? errors.reduce((s, e) => s + e, 0) / errors.length : 1;
-            if (avg < 0.3) {
-                scanActive = false;
-                stopQuagga().then(() => onBarcodeFound(code));
-            }
-        };
-        Quagga.onDetected(quaggaHandler);
+        const formats = [
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+        ];
 
-        return new Promise((resolve, reject) => {
-            Quagga.init({
-                inputStream: {
-                    type: 'LiveStream',
-                    target: document.getElementById('reader'),
-                    constraints: { facingMode: 'environment' }
-                },
-                locator: { patchSize: 'medium', halfSample: true },
-                numOfWorkers: 0,
-                decoder: {
-                    readers: ['upc_reader', 'ean_reader', 'ean_8_reader'],
-                    multiple: false
-                },
-                locate: true
-            }, err => {
-                if (err) { reject(err); return; }
-                quaggaRunning = true;
-                Quagga.start();
-                resolve();
-            });
-        }).catch(err => {
-            if (quaggaHandler) {
-                try { Quagga.offDetected(quaggaHandler); } catch (_) {}
-                quaggaHandler = null;
-            }
+        try {
+            await html5QrCode.start(
+                { facingMode: 'environment' },
+                { fps: 10, formatsToSupport: formats, qrbox: { width: 280, height: 120 } },
+                onBarcodeFound,
+                () => {}   // per-frame miss — suppress
+            );
+        } catch (err) {
             showToast(cameraErrorMsg(err));
             showManualEntry();
-        });
-    }
-
-    async function stopQuagga() {
-        if (quaggaHandler) {
-            try { Quagga.offDetected(quaggaHandler); } catch (_) {}
-            quaggaHandler = null;
-        }
-        if (quaggaRunning) {
-            try { Quagga.stop(); } catch (_) {}
-            quaggaRunning = false;
         }
     }
 
@@ -677,13 +644,19 @@
 
     // ── Barcode found (all paths) ─────────────────────────────────────────────
     async function onBarcodeFound(text) {
-        if (currentBarcode) return;
-        currentBarcode = normalizeBarcode(text);
+        if (currentBarcode) return;   // prevent double-fire
+        currentBarcode = text.slice(0, 6);
         scanActive     = false;
+
+        // Stop html5-qrcode if it was running
+        if (html5QrCode) {
+            try { await html5QrCode.stop(); } catch (_) {}
+        }
 
         document.getElementById('barcode-display').textContent = currentBarcode;
 
         if (USE_NATIVE && scanStream) {
+            // Reuse the already-open stream — no restart needed
             document.getElementById('video-capture').srcObject = scanStream;
             showScreen('capture');
         } else {
@@ -691,7 +664,7 @@
         }
     }
 
-    // ── Capture camera ────────────────────────────────────────────────────────
+    // ── Capture camera (html5-qrcode path or retake) ──────────────────────────
     async function startCaptureCamera() {
         try {
             captureStream = await navigator.mediaDevices.getUserMedia({
@@ -769,11 +742,14 @@
     }
 
     // ── Full reset ─────────────────────────────────────────────────────────────
-    async function reset() {
+    function reset() {
         currentBarcode = '';
         photoBlob      = null;
-        await stopQuagga();
         stopAllStreams();
+        if (html5QrCode) {
+            try { html5QrCode.stop(); } catch (_) {}
+            html5QrCode = null;
+        }
         document.getElementById('reader').innerHTML = '';
         resetPreviewActions();
         showScreen('home');
@@ -784,15 +760,15 @@
 
     document.getElementById('btn-cancel-scan').addEventListener('click', async () => {
         scanActive = false;
-        await stopQuagga();
+        if (html5QrCode) { try { await html5QrCode.stop(); } catch (_) {} html5QrCode = null; }
         stopAllStreams();
         document.getElementById('reader').innerHTML = '';
         showScreen('home');
     });
 
-    document.getElementById('btn-enter-manual').addEventListener('click', async () => {
+    document.getElementById('btn-enter-manual').addEventListener('click', () => {
         scanActive = false;
-        await stopQuagga();
+        if (html5QrCode) { try { html5QrCode.stop(); } catch (_) {} html5QrCode = null; }
         stopAllStreams();
         showManualEntry();
     });
@@ -809,8 +785,7 @@
         if (e.key === 'Enter') document.getElementById('btn-manual-submit').click();
     });
 
-    document.getElementById('btn-rescan').addEventListener('click', async () => {
-        await stopQuagga();
+    document.getElementById('btn-rescan').addEventListener('click', () => {
         stopAllStreams();
         currentBarcode = '';
         startScanning();
